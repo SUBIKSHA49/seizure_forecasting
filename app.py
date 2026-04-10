@@ -4,124 +4,144 @@ import numpy as np
 from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
 
-# ---------------- UI HEADER ----------------
-st.set_page_config(page_title="EEG Seizure Forecasting", layout="wide")
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(
+    page_title="EEG Intelligence Dashboard",
+    layout="wide",
+    page_icon="🧠"
+)
 
-st.title("🧠 Seizure Forecasting Dashboard")
-st.markdown("### 📂 Drop your EEG file here to analyze brain activity and predict seizure risk")
+# ---------------- HEADER ----------------
+st.title("🧠 EEG Intelligence System")
+st.markdown("### Seizure Prediction + EEG Wave Forecasting Dashboard")
 
-# ---------------- FILE UPLOAD ----------------
-uploaded_file = st.file_uploader("Upload EEG CSV File", type=["csv"])
+st.divider()
 
+# ---------------- LOAD MODELS ----------------
+@st.cache_resource
+def load_models():
+    cnn = load_model("cnn_model.h5", compile=False)
+    lstm = load_model("lstm_model.h5", compile=False)
+    return cnn, lstm
+
+cnn_model, lstm_model = load_models()
+
+# ---------------- UPLOAD ----------------
+uploaded_file = st.file_uploader("📂 Upload EEG CSV File", type=["csv"])
+
+# ======================================================
+# MAIN LOGIC
+# ======================================================
 if uploaded_file is not None:
 
-    # ---------------- LOAD DATA ----------------
     df = pd.read_csv(uploaded_file)
     df = df.drop(columns=['Unnamed: 0'], errors='ignore')
     df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
 
-    # Extract signal
     signal = df.iloc[0, :-1].values.astype(float)
 
-    # ---------------- DASHBOARD LAYOUT ----------------
-    col1, col2 = st.columns(2)
+    # ---------------- SIDEBAR ----------------
+    st.sidebar.title("⚙️ Analysis Panel")
+    st.sidebar.write("Signal length:", len(signal))
+    st.sidebar.write("Models loaded: CNN + LSTM")
 
-    with col1:
-        st.subheader("📊 EEG Signal")
-        st.line_chart(signal)
-
-    # ---------------- LSTM PROCESS ----------------
+    # ---------------- SCALING ----------------
     scaler = MinMaxScaler()
     signal_scaled = scaler.fit_transform(signal.reshape(-1, 1))
 
+    # ---------------- LSTM SEQUENCES ----------------
     def create_sequences(data, seq_length=10):
         X = []
         for i in range(len(data) - seq_length):
             X.append(data[i:i+seq_length])
         return np.array(X)
 
-    X = create_sequences(signal_scaled)
+    X_lstm = create_sequences(signal_scaled)
 
-    # Load model (FIXED)
-    model = load_model("lstm_model.h5", compile=False)
+    if len(X_lstm) == 0:
+        st.error("❌ Signal too short for LSTM prediction")
+        st.stop()
 
-    predictions = model.predict(X)
+    # ---------------- LSTM PREDICTION ----------------
+    predictions = lstm_model.predict(X_lstm)
     predictions = scaler.inverse_transform(predictions)
 
+    # ---------------- CNN PREDICTION (FIXED) ----------------
+    cnn_input = signal.reshape(1, 178, 1)
+
+    cnn_pred = cnn_model.predict(cnn_input)[0]
+
+    prob_normal = float(cnn_pred[0])
+    prob_seizure = float(cnn_pred[1])
+
+    result = np.argmax(cnn_pred)
+
+    # 🔥 FIXED RISK SCORE (NO FALSE HIGH RISK ISSUE)
+    risk_score = prob_seizure
+
+    # ---------------- METRICS ----------------
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("📊 Mean Signal", f"{np.mean(signal):.2f}")
+
     with col2:
-        st.subheader("📉 Predicted Signal (LSTM)")
+        st.metric("📈 Max Signal", f"{np.max(signal):.2f}")
+
+    with col3:
+        st.metric("📉 Std Deviation", f"{np.std(signal):.2f}")
+
+    st.divider()
+
+    # ---------------- GRAPHS ----------------
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("📊 Original EEG Signal")
+        st.line_chart(signal)
+
+    with col2:
+        st.subheader("🔮 Predicted EEG Signal (LSTM)")
         st.line_chart(predictions)
 
-    # ---------------- FEATURE EXTRACTION ----------------
-    mean_val = np.mean(signal)
-    max_val = np.max(signal)
-    std_val = np.std(signal)
+    st.divider()
 
-    # ---------------- METRICS DISPLAY ----------------
-    st.markdown("## 📊 Signal Metrics")
+    # ---------------- SEIZURE RISK (FIXED LOGIC) ----------------
+    st.subheader("🚨 Seizure Risk Analysis")
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Mean", f"{mean_val:.2f}")
-    m2.metric("Max Value", f"{max_val:.2f}")
-    m3.metric("Standard Deviation", f"{std_val:.2f}")
+    # 🔥 IMPROVED SCORING (NO MORE ALWAYS HIGH RISK)
+    if prob_seizure >= 0.85 and prob_seizure > prob_normal:
+        st.error(f"🔥 VERY HIGH SEIZURE RISK ({prob_seizure:.2f})")
 
-    # ---------------- RISK ANALYSIS ----------------
-    st.markdown("## 🧠 Seizure Risk Analysis")
+    elif prob_seizure >= 0.65:
+        st.warning(f"⚠️ HIGH SEIZURE RISK ({prob_seizure:.2f})")
 
-    if max_val > 150:
-        st.error("🚨 High Risk of Seizure")
-        comment = "Abnormally high spikes detected in EEG signal. Immediate medical attention recommended."
-        risk_level = "high"
-
-    elif std_val > 40:
-        st.warning("⚠️ Moderate Risk")
-        comment = "High variability observed. Possible abnormal brain activity."
-        risk_level = "moderate"
+    elif prob_seizure >= 0.40:
+        st.info(f"🟡 MODERATE RISK ({prob_seizure:.2f})")
 
     else:
-        st.success("✅ Normal EEG Activity")
-        comment = "EEG signal appears stable with no major abnormalities."
-        risk_level = "low"
+        st.success(f"✅ LOW RISK ({prob_seizure:.2f})")
 
-    # ---------------- COMMENT SECTION ----------------
-    st.markdown("## 📝 System Interpretation")
-    st.info(comment)
+    st.divider()
 
-    # ---------------- INTERACTIVE INPUT ----------------
-    if risk_level in ["moderate", "high"]:
+    # ---------------- BRAIN ANALYSIS ----------------
+    st.subheader("🧠 Brain Activity Interpretation")
 
-        st.markdown("## 🧾 Patient Information")
+    signal_var = np.var(signal)
+    pred_var = np.var(predictions)
+    overall_var = (signal_var + pred_var) / 2
 
-        age = st.number_input("Age", 1, 100)
-        problem = st.selectbox(
-            "Select Primary Issue",
-            ["Frequent Headache", "Previous Seizures", "Memory Loss", "No prior issues"]
-        )
+    if prob_seizure >= 0.85:
+        st.error("Seizure activity strongly detected by CNN model.")
 
-        medication = st.selectbox(
-            "Current Medication",
-            ["None", "Anti-epileptic drugs", "Painkillers", "Other"]
-        )
+    elif prob_seizure >= 0.65:
+        st.warning("High seizure probability detected → monitor closely.")
 
-        st.markdown("## 💊 AI Recommendation")
+    elif overall_var > np.percentile(signal_var, 90):
+        st.info("Mild abnormal activity detected.")
 
-        if risk_level == "high":
-            st.error("🚨 Immediate neurologist consultation required")
+    else:
+        st.success("Normal brain activity detected.")
 
-            if medication == "None":
-                st.warning("⚠️ Patient is not on medication. Clinical evaluation needed urgently.")
-
-            elif medication == "Anti-epileptic drugs":
-                st.info("🔍 Monitor drug effectiveness. EEG shows abnormal spikes.")
-
-            else:
-                st.info("⚠️ Current medication may not be sufficient. Doctor review required.")
-
-        elif risk_level == "moderate":
-            st.warning("⚠️ Regular monitoring recommended")
-
-            if problem == "Previous Seizures":
-                st.info("🔍 Possible recurrence risk. Continue monitoring.")
-
-            else:
-                st.info("📊 Mild abnormality detected. Lifestyle and sleep monitoring advised.")
+else:
+    st.info("👆 Upload EEG CSV file to start analysis")
